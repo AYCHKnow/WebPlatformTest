@@ -5,22 +5,6 @@
 <script>
 const workerURL = 'resources/empty-worker.js';
 
-const queueTask = (function() {
-  const callbacks = new Map();
-  const { port1, port2 } = new MessageChannel();
-
-  port2.onmessage = ({ data }) => {
-    callbacks.get(data)();
-    callbacks.delete(data);
-  };
-
-  return function queueTask(callback) {
-    const id = Math.random();
-    callbacks.set(id, callback);
-    port1.postMessage(id);
-  };
-})();
-
 promise_test(async function(t) {
   const scope = 'resources/scope/test-event-order';
   const firstWorkerURL = new URL(workerURL + '?1', location).href;
@@ -104,12 +88,24 @@ promise_test(async function(t) {
   assert_equals(registration.installing.state, 'installing', 'Installing worker is installing');
   assert_equals(registration.active.state, 'activated', 'Active worker is activated');
 
+  // Expect an 'updatefound' event on the registration in the next task.
+  await new Promise((resolve) => {
+    registration.addEventListener('updatefound', () => {
+      // Same as above
+      assert_equals(registration.installing.scriptURL, secondWorkerURL, 'Has installing worker');
+      assert_equals(registration.waiting, null, 'Has no waiting worker');
+      assert_equals(registration.active.scriptURL, firstWorkerURL, 'Has active worker');
+      // Same as above
+      assert_equals(registration.installing.state, 'installing', 'Installing worker is installing');
+      assert_equals(registration.active.state, 'activated', 'Active worker is activated');
+      resolve();
+    }, { once: true });
+  });
+
   const secondWorker = registration.installing;
   const expectedStates = ['installed', 'activating', 'activated'];
 
-  // Follow secondWorker through its various states, ensuring the registration is updated at the same time.
   await new Promise((resolve, reject) => {
-    let taskInbetween = false;
     const eventOrder = [];
 
     firstWorker.addEventListener('statechange', () => {
@@ -121,7 +117,6 @@ promise_test(async function(t) {
         assert_equals(registration.waiting, null, 'Has no waiting worker');
         assert_equals(registration.active.scriptURL, secondWorkerURL, 'Has active worker');
 
-        assert_false(taskInbetween, `Shouldn't have had a task between events`);
         eventOrder.push('firstWorker redundant');
         queueTask(() => taskInbetween = true);
       } catch (err) {
@@ -129,6 +124,7 @@ promise_test(async function(t) {
       }
     }, { once: true });
 
+    // Follow secondWorker through its various states, ensuring the registration is updated at the same time.
     secondWorker.addEventListener('statechange', function stateChange() {
       try {
         const expectedState = expectedStates.shift();
@@ -143,9 +139,7 @@ promise_test(async function(t) {
             assert_equals(firstWorker.state, 'activated', 'firstWorker is still activated');
             break;
           case 'activating':
-            assert_false(taskInbetween, `Shouldn't have had a task between events`);
             eventOrder.push('secondWorker activating');
-            queueTask(() => taskInbetween = true);
             // And continue…
           case 'activated':
             assert_equals(registration.installing, null, 'Has no installing worker');
